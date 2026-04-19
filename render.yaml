@@ -17,15 +17,15 @@ services:
   - type: web
     name: sports-oracle-ui
     runtime: node
-    plan: starter            # 512 MB RAM; enough for Next.js + pg client
+    plan: free               # 512 MB RAM; spins down after 15 min inactivity
     region: oregon
     rootDir: .
     buildCommand: npm ci && npm run build
     startCommand: npm start
     healthCheckPath: /slate
     envVars:
-      # Paste the connection string from your Render Postgres service here,
-      # or reference it cross-blueprint via `fromService` if you use a monorepo.
+      # Paste the Internal Database URL (or External) from the Render
+      # sports-oracle-db service's "Connect" tab.
       - key: DATABASE_URL
         sync: false
       - key: NODE_ENV
