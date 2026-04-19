@@ -20,7 +20,9 @@ services:
     plan: free               # 512 MB RAM; spins down after 15 min inactivity
     region: oregon
     rootDir: .
-    buildCommand: npm ci && npm run build
+    # --include=dev forces npm ci to install devDependencies even though
+    # NODE_ENV=production is set (Tailwind + Drizzle live in devDeps).
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /slate
     envVars:
