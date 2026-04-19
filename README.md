@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# sports-oracle-ui
 
-## Getting Started
+Next.js 15 + Tailwind + shadcn/ui frontend for the
+[sports-oracle-python](../sports-oracle-python) MLB projections pipeline.
+Reads directly from the shared Postgres database via Drizzle.
 
-First, run the development server:
+## Stack
+
+- Next.js 15 App Router + TypeScript
+- Tailwind CSS + shadcn/ui (dark-mode-first)
+- Drizzle ORM + `postgres` driver
+- Recharts for factor radars, spray scatters, calibration plots
+- No auth — local tool
+
+## Setup
 
 ```bash
+cd ~/projects/sports-oracle-ui
+npm install
+# .env.local has the local Postgres DSN
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# open http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The pipeline repo runs Postgres in Docker. If the DB isn't up yet, start it there:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+cd ~/projects/sports-oracle-python
+docker compose up -d
+python -m db.init_schema
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Routes
 
-## Learn More
+| Path                        | What                                                      |
+| --------------------------- | --------------------------------------------------------- |
+| `/slate?date=YYYY-MM-DD`    | Grid of games for a date, NRFI % as hero metric           |
+| `/games/[gamePk]`           | Home/away lineups w/ factor pills + starting-pitcher card |
+| `/hitters/[playerId]`       | Factor radar, spray chart, splits, similar hitters        |
+| `/calibration`              | Projected vs actual DK scatter + daily MAE                |
 
-To learn more about Next.js, take a look at the following resources:
+## Conventions
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- All DB queries go through `src/lib/db/queries.ts`. Use `inArray()` from
+  Drizzle rather than raw `sql\`ANY(${arr})\`` — the `postgres` driver
+  interprets JS arrays differently than psycopg.
+- shadcn components live in `src/components/ui/`. Custom components (factor
+  pills, charts) sit in `src/components/`.
+- Pages use `export const dynamic = 'force-dynamic'` — projections change
+  daily and we don't want stale caches.
+- Dates are rendered as ISO strings (`YYYY-MM-DD`) to match the pipeline.

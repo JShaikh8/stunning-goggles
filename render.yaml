@@ -1,0 +1,34 @@
+# Render Blueprint for sports-oracle-ui (Next.js web app).
+#
+# This service reads from the same Postgres that sports-oracle-python writes to.
+# You can either:
+#   (A) Deploy the Python repo first (it defines the database), then connect
+#       this UI to that database manually via its connection string.
+#   (B) Put both render.yaml files in a monorepo — Render's blueprint
+#       discovery will provision the DB once and wire env vars automatically.
+#
+# Steps for option (A) after pushing this repo to GitHub:
+#   1. In Render → New → Blueprint → select this repo.
+#   2. After provision, open this web service's settings and paste the
+#      DATABASE_URL copied from the sports-oracle-db service.
+#   3. Trigger a manual deploy.
+
+services:
+  - type: web
+    name: sports-oracle-ui
+    runtime: node
+    plan: starter            # 512 MB RAM; enough for Next.js + pg client
+    region: oregon
+    rootDir: .
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /slate
+    envVars:
+      # Paste the connection string from your Render Postgres service here,
+      # or reference it cross-blueprint via `fromService` if you use a monorepo.
+      - key: DATABASE_URL
+        sync: false
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
