@@ -1,35 +1,29 @@
-# Render Blueprint for sports-oracle-ui (Next.js web app).
+# Render Blueprint for sports-oracle-ui (Next.js web app) — STATIC MODE.
 #
-# This service reads from the same Postgres that sports-oracle-python writes to.
-# You can either:
-#   (A) Deploy the Python repo first (it defines the database), then connect
-#       this UI to that database manually via its connection string.
-#   (B) Put both render.yaml files in a monorepo — Render's blueprint
-#       discovery will provision the DB once and wire env vars automatically.
+# The database + pipeline stay on the user's local machine. Page data is
+# exported as JSON snapshots (public/data/*.json) by the Python script
+# `scripts/export_for_ui.py` and committed to this repo. Render serves the
+# Next.js app; SSR reads the bundled JSON files. No DB, no DATABASE_URL.
 #
-# Steps for option (A) after pushing this repo to GitHub:
-#   1. In Render → New → Blueprint → select this repo.
-#   2. After provision, open this web service's settings and paste the
-#      DATABASE_URL copied from the sports-oracle-db service.
-#   3. Trigger a manual deploy.
+# Workflow to update production:
+#   1. Locally: python run_daily.py
+#   2. Locally: python -m scripts.export_for_ui
+#   3. cd sports-oracle-ui && git add public/data && git commit -m "data YYYY-MM-DD"
+#   4. git push → Render auto-redeploys within ~2 min.
 
 services:
   - type: web
     name: sports-oracle-ui
     runtime: node
-    plan: free               # 512 MB RAM; spins down after 15 min inactivity
+    plan: free
     region: oregon
     rootDir: .
-    # --include=dev forces npm ci to install devDependencies even though
-    # NODE_ENV=production is set (Tailwind + Drizzle live in devDeps).
     buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /slate
     envVars:
-      # Paste the Internal Database URL (or External) from the Render
-      # sports-oracle-db service's "Connect" tab.
-      - key: DATABASE_URL
-        sync: false
+      - key: DATA_MODE
+        value: static
       - key: NODE_ENV
         value: production
       - key: NEXT_TELEMETRY_DISABLED

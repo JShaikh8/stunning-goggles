@@ -2,11 +2,12 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { CalendarDays, DollarSign, Hourglass, LineChart, Target, Users } from 'lucide-react';
+import { CalendarDays, DollarSign, Flame, Hourglass, LineChart, Target, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ITEMS = [
   { href: '/slate',       label: 'Slate',        icon: CalendarDays, sublabel: "Today's games" },
+  { href: '/props',       label: 'Props',        icon: Flame,        sublabel: 'HR · Hits research' },
   { href: '/players',     label: 'Players',      icon: Users,        sublabel: 'All batters · pitchers' },
   { href: '/nrfi',        label: 'NRFI',         icon: Hourglass,    sublabel: 'First-inning odds' },
   { href: '/lineups',     label: 'Lineups',      icon: DollarSign,   sublabel: 'FanDuel optimizer' },

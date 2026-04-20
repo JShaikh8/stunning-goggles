@@ -1,5 +1,23 @@
 import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db } from './client';
+import { calibrateHrProb, calibrateHitProb } from '@/lib/calibration';
+import {
+  IS_STATIC_MODE,
+  static_getSlate,
+  static_getNrfiSlate,
+  static_getPropsSlateRaw,
+  static_getBattersSlate,
+  static_getPitchersSlate,
+  static_getGameDetail,
+  static_getHitterDetail,
+  static_getPitcherDetail,
+  static_getDfsPool,
+  static_getCalibrationRaw,
+  static_getTodayGameDates,
+  static_getAvailableSlateDates,
+  static_getCalibrationDateRange,
+  type StaticPropsRowRaw,
+} from './static-source';
 import {
   atBats,
   games,
@@ -20,6 +38,7 @@ import {
 // ── Slate ───────────────────────────────────────────────────────────
 
 export async function getSlate(gameDate: string) {
+  if (IS_STATIC_MODE) return static_getSlate(gameDate) as never;
   const rows = await db
     .select({
       gamePk: games.gamePk,
@@ -46,22 +65,65 @@ export async function getSlate(gameDate: string) {
     .where(eq(games.gameDate, gameDate))
     .orderBy(asc(games.gameTimeUtc));
 
+  // Per-side lineup source: 'confirmed' if any projection on that side was
+  // marked confirmed; otherwise 'fallback' (previous game's batting order).
+  const srcRows = await db.execute(sql`
+    SELECT game_pk, side,
+           CASE WHEN BOOL_OR(lineup_source = 'confirmed') THEN 'confirmed' ELSE 'fallback' END AS lineup_source
+    FROM projections WHERE game_date = ${gameDate}
+    GROUP BY game_pk, side
+  `);
+  const srcList = asRows<{ game_pk: number; side: string; lineup_source: string }>(srcRows);
+  const srcMap = new Map<string, string>();
+  for (const s of srcList) srcMap.set(`${s.game_pk}:${s.side}`, s.lineup_source);
+
   const awayIds = rows.map((r) => r.awayTeamId).filter(Boolean) as number[];
   const awayTeams = awayIds.length
     ? await db.select().from(teams).where(inArray(teams.teamId, awayIds))
     : [];
   const awayMap = new Map(awayTeams.map((t) => [t.teamId, t]));
 
+  // Fetch last-7 NRFI trend for each home team (strictly before this date)
+  const homeTeamIds = Array.from(new Set(
+    rows.map((r) => r.homeTeamId).filter(Boolean) as number[],
+  ));
+  const trendMap = new Map<number, { d: string; pct: number }[]>();
+  if (homeTeamIds.length) {
+    const idList = sql.join(homeTeamIds.map((id) => sql`${id}`), sql`, `);
+    const trendRows = await db.execute(sql`
+      WITH ranked AS (
+        SELECT g.home_team_id, g.game_date::text AS d, np.nrfi_pct,
+               ROW_NUMBER() OVER (PARTITION BY g.home_team_id ORDER BY g.game_date DESC) AS rn
+        FROM nrfi_projections np
+        JOIN games g ON g.game_pk = np.game_pk
+        WHERE g.home_team_id IN (${idList})
+          AND g.game_date < ${gameDate}
+          AND np.nrfi_pct IS NOT NULL
+      )
+      SELECT home_team_id, d, nrfi_pct FROM ranked WHERE rn <= 7
+      ORDER BY home_team_id, d ASC
+    `);
+    const trendList = asRows<{ home_team_id: number; d: string; nrfi_pct: number }>(trendRows);
+    for (const r of trendList) {
+      if (!trendMap.has(r.home_team_id)) trendMap.set(r.home_team_id, []);
+      trendMap.get(r.home_team_id)!.push({ d: r.d, pct: r.nrfi_pct });
+    }
+  }
+
   return rows.map((r) => ({
     ...r,
     awayAbbrev: r.awayTeamId ? awayMap.get(r.awayTeamId)?.abbrev ?? null : null,
     awayName: r.awayTeamId ? awayMap.get(r.awayTeamId)?.name ?? null : null,
+    nrfiTrend: r.homeTeamId ? trendMap.get(r.homeTeamId) ?? [] : [],
+    homeLineupSource: srcMap.get(`${r.gamePk}:home`) ?? null,
+    awayLineupSource: srcMap.get(`${r.gamePk}:away`) ?? null,
   }));
 }
 
 // ── Game detail ──────────────────────────────────────────────────────
 
 export async function getGameDetail(gamePk: number) {
+  if (IS_STATIC_MODE) return static_getGameDetail(gamePk) as never;
   const [game] = await db
     .select({
       gamePk: games.gamePk,
@@ -154,6 +216,7 @@ export async function getGameDetail(gamePk: number) {
 // ── Hitter detail ────────────────────────────────────────────────────
 
 export async function getHitterDetail(hitterId: number) {
+  if (IS_STATIC_MODE) return static_getHitterDetail(hitterId) as never;
   const [player] = await db
     .select()
     .from(players)
@@ -358,6 +421,7 @@ export async function getSeasonAvgBatch(
 // ── Pitcher detail ───────────────────────────────────────────────────
 
 export async function getPitcherDetail(pitcherId: number) {
+  if (IS_STATIC_MODE) return static_getPitcherDetail(pitcherId) as never;
   const [player] = await db.select().from(players).where(eq(players.playerId, pitcherId));
   if (!player) return null;
 
@@ -428,6 +492,7 @@ export async function getPitcherDetail(pitcherId: number) {
 // ── NRFI slate ───────────────────────────────────────────────────────
 
 export async function getNrfiSlate(gameDate: string) {
+  if (IS_STATIC_MODE) return static_getNrfiSlate(gameDate) as never;
   const rows = await db
     .select({
       gamePk: nrfiProjections.gamePk,
@@ -496,6 +561,7 @@ export async function getHitterRecentReconciliation(hitterId: number) {
 // ── Players slate (all batters + all pitchers for a date) ───────────
 
 export async function getBattersSlate(gameDate: string) {
+  if (IS_STATIC_MODE) return static_getBattersSlate(gameDate) as never;
   const rows = await db
     .select({
       hitterId: projections.hitterId,
@@ -564,6 +630,7 @@ export async function getBattersSlate(gameDate: string) {
 }
 
 export async function getPitchersSlate(gameDate: string) {
+  if (IS_STATIC_MODE) return static_getPitchersSlate(gameDate) as never;
   const rows = await db
     .select({
       pitcherId: pitcherProjections.pitcherId,
@@ -607,6 +674,7 @@ export async function getPitchersSlate(gameDate: string) {
 // ── Calibration ──────────────────────────────────────────────────────
 
 export async function getCalibrationDateRange(): Promise<[string, string] | null> {
+  if (IS_STATIC_MODE) return static_getCalibrationDateRange();
   const result = await db.execute(sql`
     SELECT MIN(game_date)::text AS min_d, MAX(game_date)::text AS max_d
     FROM projection_actuals
@@ -617,6 +685,7 @@ export async function getCalibrationDateRange(): Promise<[string, string] | null
 }
 
 export async function getCalibration(startDate: string, endDate?: string) {
+  if (IS_STATIC_MODE) return _calibrationFromStatic(startDate, endDate);
   const end = endDate ?? '9999-12-31';
   // Pull the reconciliation rows WITH each projection flavor so we can
   // compute MAE for factor vs tuned vs ml vs blend.
@@ -745,6 +814,7 @@ export type DfsPoolRow = {
 };
 
 export async function getDfsPool(slateDate: string): Promise<DfsPoolRow[]> {
+  if (IS_STATIC_MODE) return static_getDfsPool(slateDate) as unknown as Promise<DfsPoolRow[]>;
   const result = await db.execute(sql`
     WITH latest_hitter AS (
       SELECT DISTINCT ON (hitter_id)
@@ -792,6 +862,7 @@ export async function getDfsPool(slateDate: string): Promise<DfsPoolRow[]> {
 }
 
 export async function getAvailableSlateDates(): Promise<string[]> {
+  if (IS_STATIC_MODE) return static_getAvailableSlateDates();
   const result = await db.execute(sql`
     SELECT DISTINCT slate_date::text AS slate_date
     FROM fd_slate_prices
@@ -804,7 +875,306 @@ export async function getAvailableSlateDates(): Promise<string[]> {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+// ── Props (HR + Hits) ────────────────────────────────────────────────
+
+export type PropsRow = {
+  hitterId: number;
+  gamePk: number;
+  hitterName: string | null;
+  hitterHand: string | null;
+  teamAbbrev: string | null;
+  oppAbbrev: string | null;
+  venueName: string | null;
+  parkHrFactor: number | null;
+  pullPct: number | null;
+  avgExitVelo: number | null;
+  avgLaunchAngle: number | null;
+  formRatio: number | null;
+  pitcherId: number | null;
+  pitcherName: string | null;
+  pitcherHand: string | null;
+  pitcherHr9: number | null;
+  pitcherFip: number | null;
+  weather: unknown;
+  lineupSlot: number | null;
+  projH: number | null;
+  projHr: number | null;
+  projBb: number | null;
+  expectedPa: number | null;
+  pHit: number | null;
+  pTwoPlusHit: number | null;
+  pHr: number | null;
+  // Extended batted-ball stats computed from at_bats
+  barrelPct: number | null;      // share of batted balls with EV ≥ 98 AND LA 26–30°
+  hardHitPct: number | null;     // EV ≥ 95
+  last15Hr: number | null;       // HR count in hitter's last 15 games
+  vsLHrPct: number | null;       // HR / PA vs LHP (season)
+  vsRHrPct: number | null;       // HR / PA vs RHP (season)
+  windOut: boolean;              // ≥10mph with outward-facing direction
+};
+
+export async function getPropsSlate(gameDate: string): Promise<PropsRow[]> {
+  if (IS_STATIC_MODE) return _propsFromStatic(gameDate);
+  const result = await db.execute(sql`
+    WITH pitcher_hr9 AS (
+      SELECT pitcher_id,
+        (SUM(CASE WHEN event_type = 'home_run' THEN 1 ELSE 0 END)::float
+          / NULLIF(SUM(CASE WHEN event_type IN ('strikeout','strikeout_double_play','walk','intent_walk','field_out','force_out','grounded_into_double_play','fielders_choice_out','single','double','triple','home_run','hit_by_pitch','sac_fly','sac_bunt','field_error') THEN 1 ELSE 0 END), 0)) * 38.0 AS hr9
+      FROM at_bats
+      WHERE season = ${Number(gameDate.slice(0, 4))}
+      GROUP BY pitcher_id
+      HAVING SUM(CASE WHEN event_type IN ('strikeout','strikeout_double_play','walk','intent_walk','field_out','force_out','grounded_into_double_play','fielders_choice_out','single','double','triple','home_run','hit_by_pitch','sac_fly','sac_bunt','field_error') THEN 1 ELSE 0 END) >= 50
+    )
+    SELECT
+      p.hitter_id,
+      p.game_pk,
+      pl.full_name   AS hitter_name,
+      p.hitter_hand,
+      p.pitcher_id,
+      pp.full_name   AS pitcher_name,
+      pp.pitch_hand  AS pitcher_hand,
+      p.lineup_slot,
+      p.expected_pa,
+      p.proj,
+      p.side,
+      g.home_team_id,
+      g.away_team_id,
+      g.weather,
+      g.venue_id,
+      v.name         AS venue_name,
+      pf.hr_factor   AS park_hr_factor,
+      hsp.pull_pct,
+      hsp.avg_exit_velo,
+      hsp.avg_launch_angle,
+      hrf.form_ratio,
+      phr.hr9        AS pitcher_hr9,
+      pprj.fip       AS pitcher_fip
+    FROM projections p
+    LEFT JOIN players pl        ON pl.player_id = p.hitter_id
+    LEFT JOIN players pp        ON pp.player_id = p.pitcher_id
+    LEFT JOIN games g           ON g.game_pk    = p.game_pk
+    LEFT JOIN venues v          ON v.venue_id   = g.venue_id
+    LEFT JOIN park_factors pf   ON pf.venue_id  = g.venue_id
+    LEFT JOIN hitter_spray_profiles hsp ON hsp.hitter_id = p.hitter_id
+    LEFT JOIN hitter_recent_form hrf    ON hrf.hitter_id = p.hitter_id
+    LEFT JOIN pitcher_hr9 phr   ON phr.pitcher_id = p.pitcher_id
+    LEFT JOIN pitcher_projections pprj ON pprj.pitcher_id = p.pitcher_id AND pprj.game_pk = p.game_pk
+    WHERE p.game_date = ${gameDate}
+  `);
+
+  type Row = {
+    hitter_id: number;
+    game_pk: number;
+    hitter_name: string | null;
+    hitter_hand: string | null;
+    pitcher_id: number | null;
+    pitcher_name: string | null;
+    pitcher_hand: string | null;
+    lineup_slot: number | null;
+    expected_pa: number | null;
+    proj: { h?: number; hr?: number; bb?: number } | null;
+    side: string | null;
+    home_team_id: number | null;
+    away_team_id: number | null;
+    weather: unknown;
+    venue_id: number | null;
+    venue_name: string | null;
+    park_hr_factor: number | null;
+    pull_pct: number | null;
+    avg_exit_velo: number | null;
+    avg_launch_angle: number | null;
+    form_ratio: number | null;
+    pitcher_hr9: number | null;
+    pitcher_fip: number | null;
+  };
+  const rows = asRows<Row>(result);
+
+  const teamIds = Array.from(new Set(
+    rows.flatMap((r) => [r.home_team_id, r.away_team_id]).filter(Boolean) as number[],
+  ));
+  const tteams = teamIds.length
+    ? await db.select().from(teams).where(inArray(teams.teamId, teamIds))
+    : [];
+  const tmap = new Map(tteams.map((t) => [t.teamId, t]));
+
+  // Batch-compute batted-ball stats for every hitter on the slate in one pass.
+  const hitterIds = Array.from(new Set(rows.map((r) => r.hitter_id)));
+  const season = Number(gameDate.slice(0, 4));
+  type BbStats = {
+    barrelPct: number | null;
+    hardHitPct: number | null;
+    last15Hr: number | null;
+    vsLHrPct: number | null;
+    vsRHrPct: number | null;
+  };
+  const bbMap = new Map<number, BbStats>();
+
+  if (hitterIds.length) {
+    const idList = sql.join(hitterIds.map((id) => sql`${id}`), sql`, `);
+    const bbRows = await db.execute(sql`
+      WITH batted AS (
+        SELECT hitter_id, exit_velocity, launch_angle, event_type, pitcher_hand
+        FROM at_bats
+        WHERE hitter_id IN (${idList})
+          AND season = ${season}
+          AND exit_velocity IS NOT NULL
+          AND launch_angle IS NOT NULL
+      ),
+      batted_agg AS (
+        SELECT hitter_id,
+               COUNT(*)::float AS bip,
+               SUM(CASE WHEN exit_velocity >= 98 AND launch_angle BETWEEN 26 AND 30 THEN 1 ELSE 0 END)::float AS barrels,
+               SUM(CASE WHEN exit_velocity >= 95 THEN 1 ELSE 0 END)::float AS hard
+        FROM batted
+        GROUP BY hitter_id
+      ),
+      pa_all AS (
+        SELECT hitter_id, pitcher_hand, event_type
+        FROM at_bats
+        WHERE hitter_id IN (${idList})
+          AND season = ${season}
+          AND pitcher_hand IN ('L','R')
+      ),
+      vs_split AS (
+        SELECT hitter_id,
+               SUM(CASE WHEN pitcher_hand='L' AND event_type='home_run' THEN 1 ELSE 0 END)::float AS vsl_hr,
+               SUM(CASE WHEN pitcher_hand='L' THEN 1 ELSE 0 END)::float AS vsl_pa,
+               SUM(CASE WHEN pitcher_hand='R' AND event_type='home_run' THEN 1 ELSE 0 END)::float AS vsr_hr,
+               SUM(CASE WHEN pitcher_hand='R' THEN 1 ELSE 0 END)::float AS vsr_pa
+        FROM pa_all
+        GROUP BY hitter_id
+      ),
+      recent_games AS (
+        SELECT hitter_id, game_pk, game_date,
+               SUM(CASE WHEN event_type='home_run' THEN 1 ELSE 0 END) AS hr,
+               ROW_NUMBER() OVER (PARTITION BY hitter_id ORDER BY game_date DESC) AS rn
+        FROM at_bats
+        WHERE hitter_id IN (${idList})
+        GROUP BY hitter_id, game_pk, game_date
+      ),
+      last15 AS (
+        SELECT hitter_id, SUM(hr)::int AS last15_hr
+        FROM recent_games WHERE rn <= 15
+        GROUP BY hitter_id
+      )
+      SELECT h.hitter_id,
+             CASE WHEN ba.bip >= 30 THEN (ba.barrels / ba.bip) END AS barrel_pct,
+             CASE WHEN ba.bip >= 30 THEN (ba.hard    / ba.bip) END AS hard_pct,
+             l15.last15_hr,
+             CASE WHEN v.vsl_pa >= 30 THEN (v.vsl_hr / v.vsl_pa) END AS vsl_hr_pct,
+             CASE WHEN v.vsr_pa >= 30 THEN (v.vsr_hr / v.vsr_pa) END AS vsr_hr_pct
+      FROM (SELECT DISTINCT hitter_id FROM batted UNION SELECT DISTINCT hitter_id FROM pa_all UNION SELECT DISTINCT hitter_id FROM recent_games) h
+      LEFT JOIN batted_agg ba ON ba.hitter_id = h.hitter_id
+      LEFT JOIN vs_split v    ON v.hitter_id  = h.hitter_id
+      LEFT JOIN last15 l15    ON l15.hitter_id = h.hitter_id
+    `);
+    const bb = asRows<{
+      hitter_id: number;
+      barrel_pct: number | null;
+      hard_pct: number | null;
+      last15_hr: number | null;
+      vsl_hr_pct: number | null;
+      vsr_hr_pct: number | null;
+    }>(bbRows);
+    for (const r of bb) {
+      bbMap.set(r.hitter_id, {
+        barrelPct: r.barrel_pct,
+        hardHitPct: r.hard_pct,
+        last15Hr: r.last15_hr,
+        vsLHrPct: r.vsl_hr_pct,
+        vsRHrPct: r.vsr_hr_pct,
+      });
+    }
+  }
+
+  return rows.map((r) => {
+    const owning   = r.side === 'home' ? r.home_team_id : r.away_team_id;
+    const opposing = r.side === 'home' ? r.away_team_id : r.home_team_id;
+    const projH = r.proj?.h ?? null;
+    const projHr = r.proj?.hr ?? null;
+    // Raw Poisson P(≥1) then apply isotonic calibration learned from
+    // reconciled hitter-games (see src/lib/calibration/*.json).
+    const rawPHit = projH != null ? 1 - Math.exp(-projH) : null;
+    const rawPHr  = projHr != null ? 1 - Math.exp(-projHr) : null;
+    const pHit = calibrateHitProb(rawPHit);
+    const pHr  = calibrateHrProb(rawPHr);
+    const pTwoPlusHit = projH != null ? 1 - Math.exp(-projH) - projH * Math.exp(-projH) : null;
+    const bb = bbMap.get(r.hitter_id);
+    const w = r.weather as { windSpeedMph?: number; windDir?: string } | null;
+    const dir = (w?.windDir ?? '').toLowerCase();
+    const windOut = (w?.windSpeedMph ?? 0) >= 10 && (dir.includes('out') || /^(cf|lf|rf)/.test(dir));
+    return {
+      hitterId: r.hitter_id,
+      gamePk: r.game_pk,
+      hitterName: r.hitter_name,
+      hitterHand: r.hitter_hand,
+      teamAbbrev: owning ? tmap.get(owning)?.abbrev ?? null : null,
+      oppAbbrev: opposing ? tmap.get(opposing)?.abbrev ?? null : null,
+      venueName: r.venue_name,
+      parkHrFactor: r.park_hr_factor,
+      pullPct: r.pull_pct,
+      avgExitVelo: r.avg_exit_velo,
+      avgLaunchAngle: r.avg_launch_angle,
+      formRatio: r.form_ratio,
+      pitcherId: r.pitcher_id,
+      pitcherName: r.pitcher_name,
+      pitcherHand: r.pitcher_hand,
+      pitcherHr9: r.pitcher_hr9,
+      pitcherFip: r.pitcher_fip,
+      weather: r.weather,
+      lineupSlot: r.lineup_slot,
+      projH,
+      projHr,
+      projBb: r.proj?.bb ?? null,
+      expectedPa: r.expected_pa,
+      pHit,
+      pTwoPlusHit,
+      pHr,
+      barrelPct: bb?.barrelPct ?? null,
+      hardHitPct: bb?.hardHitPct ?? null,
+      last15Hr: bb?.last15Hr ?? null,
+      vsLHrPct: bb?.vsLHrPct ?? null,
+      vsRHrPct: bb?.vsRHrPct ?? null,
+      windOut,
+    };
+  });
+}
+
+/**
+ * Last-N batted balls with hit coords for a single hitter, for use in a park
+ * spray overlay. Excludes rows without coords.
+ */
+export async function getHitterSprayHits(hitterId: number, limit = 40) {
+  if (IS_STATIC_MODE) {
+    type Raw = { hit_coord_x: number | null; hit_coord_y: number | null; event_type: string | null };
+    const h = (await static_getHitterDetail(hitterId)) as { sprayHits?: Raw[] } | null;
+    return (h?.sprayHits ?? []).slice(0, limit).map((r) => ({
+      hitCoordX: r.hit_coord_x,
+      hitCoordY: r.hit_coord_y,
+      eventType: r.event_type,
+    }));
+  }
+  const rows = await db
+    .select({
+      hitCoordX: atBats.hitCoordX,
+      hitCoordY: atBats.hitCoordY,
+      eventType: atBats.eventType,
+    })
+    .from(atBats)
+    .where(
+      and(
+        eq(atBats.hitterId, hitterId),
+        sql`${atBats.hitCoordX} IS NOT NULL`,
+        sql`${atBats.hitCoordY} IS NOT NULL`,
+      ),
+    )
+    .orderBy(desc(atBats.gameDate))
+    .limit(limit);
+  return rows;
+}
+
 export async function getTodayGameDates(): Promise<string[]> {
+  if (IS_STATIC_MODE) return static_getTodayGameDates();
   const result = await db
     .select({ date: sql<string>`DISTINCT ${games.gameDate}` })
     .from(projections)
@@ -812,4 +1182,135 @@ export async function getTodayGameDates(): Promise<string[]> {
     .orderBy(desc(games.gameDate))
     .limit(30);
   return result.map((r) => r.date);
+}
+
+// ══════════════════ Static-mode helpers ══════════════════
+// Mirror the SQL logic of getPropsSlate() + getCalibration() but operate on
+// snapshot JSON instead of hitting Postgres.
+
+async function _propsFromStatic(gameDate: string): Promise<PropsRow[]> {
+  const rows = await static_getPropsSlateRaw(gameDate);
+  return rows.map((r: StaticPropsRowRaw) => {
+    const projH = r.proj?.h ?? null;
+    const projHr = r.proj?.hr ?? null;
+    const rawPHit = projH != null ? 1 - Math.exp(-projH) : null;
+    const rawPHr  = projHr != null ? 1 - Math.exp(-projHr) : null;
+    const pHit = calibrateHitProb(rawPHit);
+    const pHr  = calibrateHrProb(rawPHr);
+    const pTwoPlusHit = projH != null ? 1 - Math.exp(-projH) - projH * Math.exp(-projH) : null;
+    const weather = r.weather as { windSpeedMph?: number; windDir?: string } | null;
+    const dir = (weather?.windDir ?? '').toLowerCase();
+    const windOut = (weather?.windSpeedMph ?? 0) >= 10 && (dir.includes('out') || /^(cf|lf|rf)/.test(dir));
+    return {
+      hitterId: r.hitter_id,
+      gamePk: r.game_pk,
+      hitterName: r.hitter_name,
+      hitterHand: r.hitter_hand,
+      teamAbbrev: r.own_abbrev,
+      oppAbbrev: r.opp_abbrev,
+      venueName: r.venue_name,
+      parkHrFactor: r.park_hr_factor,
+      pullPct: r.pull_pct,
+      avgExitVelo: r.avg_exit_velo,
+      avgLaunchAngle: r.avg_launch_angle,
+      formRatio: r.form_ratio,
+      pitcherId: r.pitcher_id,
+      pitcherName: r.pitcher_name,
+      pitcherHand: r.pitcher_hand,
+      pitcherHr9: r.pitcher_hr9,
+      pitcherFip: r.pitcher_fip,
+      weather: r.weather,
+      lineupSlot: r.lineup_slot,
+      projH,
+      projHr,
+      projBb: r.proj?.bb ?? null,
+      expectedPa: r.expected_pa,
+      pHit,
+      pTwoPlusHit,
+      pHr,
+      barrelPct: r.barrel_pct,
+      hardHitPct: r.hard_hit_pct,
+      last15Hr: r.last15_hr,
+      vsLHrPct: null,
+      vsRHrPct: null,
+      windOut,
+    } as PropsRow;
+  });
+}
+
+async function _calibrationFromStatic(startDate: string, endDate?: string) {
+  const { rows } = await static_getCalibrationRaw();
+  const end = endDate ?? '9999-12-31';
+  const filtered = rows.filter((r) => r.game_date >= startDate && r.game_date <= end);
+
+  const abs = (v: number | null) => (v == null ? 0 : Math.abs(v));
+  const mae = (sel: (r: typeof rows[number]) => number | null) => {
+    const vals = filtered.map((r) => {
+      const p = sel(r), a = r.actual_dk_pts;
+      return p == null || a == null ? null : abs(p - a);
+    }).filter((v): v is number => v != null);
+    return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+  };
+  const bias = (sel: (r: typeof rows[number]) => number | null) => {
+    const vals = filtered.map((r) => {
+      const p = sel(r), a = r.actual_dk_pts;
+      return p == null || a == null ? null : p - a;
+    }).filter((v): v is number => v != null);
+    return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+  };
+
+  const count = filtered.length;
+  const factorMae = mae((r) => r.factor_dk);
+  const tunedMae  = mae((r) => r.tuned_dk_pts);
+  const mlMae     = mae((r) => r.ml_dk_pts);
+  const blendMae  = mae((r) => r.blend_dk_pts);
+  const factorBias = bias((r) => r.factor_dk);
+  const tunedBias  = bias((r) => r.tuned_dk_pts);
+  const mlBias     = bias((r) => r.ml_dk_pts);
+  const blendBias  = bias((r) => r.blend_dk_pts);
+  const meanActual = count ? filtered.reduce((s, r) => s + (r.actual_dk_pts ?? 0), 0) / count : 0;
+  const baselineMae = count
+    ? filtered.reduce((s, r) => s + Math.abs((r.actual_dk_pts ?? 0) - meanActual), 0) / count
+    : 0;
+
+  const sqSum = filtered.reduce((s, r) => {
+    const p = r.blend_dk_pts, a = r.actual_dk_pts;
+    return p != null && a != null ? s + (p - a) ** 2 : s;
+  }, 0);
+  const rmse = count ? Math.sqrt(sqSum / count) : 0;
+
+  const scatter = filtered.map((r) => ({
+    projDkPts: r.blend_dk_pts,
+    actualDkPts: r.actual_dk_pts,
+    dkError: (r.blend_dk_pts ?? 0) - (r.actual_dk_pts ?? 0),
+    absDkError: Math.abs((r.blend_dk_pts ?? 0) - (r.actual_dk_pts ?? 0)),
+    gameDate: r.game_date,
+  }));
+  const byDate = new Map<string, { n: number; absSum: number }>();
+  for (const s of scatter) {
+    const cur = byDate.get(s.gameDate) ?? { n: 0, absSum: 0 };
+    cur.n += 1;
+    cur.absSum += s.absDkError;
+    byDate.set(s.gameDate, cur);
+  }
+  const byDateArray = Array.from(byDate.entries()).map(([date, v]) => ({
+    date,
+    mae: v.n ? v.absSum / v.n : 0,
+  }));
+
+  return {
+    rows: scatter,
+    count,
+    mae: blendMae,
+    rmse,
+    byDate: byDateArray,
+    compare: {
+      factor:   { mae: factorMae, bias: factorBias },
+      tuned:    { mae: tunedMae,  bias: tunedBias  },
+      ml:       { mae: mlMae,     bias: mlBias     },
+      blend:    { mae: blendMae,  bias: blendBias  },
+      baseline: { mae: baselineMae, bias: 0 },
+      meanActual,
+    },
+  };
 }
