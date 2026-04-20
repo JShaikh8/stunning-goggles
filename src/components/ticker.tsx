@@ -34,9 +34,9 @@ export async function Ticker() {
   const chain = items.length ? [...items, ...items] : [];
 
   return (
-    <div className="relative flex h-8 items-center overflow-hidden border-b border-hairline bg-[var(--surface-1)]">
+    <div className="relative flex h-10 items-center overflow-hidden border-b border-hairline bg-[var(--surface-1)] md:h-8">
       {chain.length > 0 ? (
-        <div className="ticker-track flex shrink-0 items-center gap-7 whitespace-nowrap pl-4 pr-40 font-mono text-[11px]">
+        <div className="ticker-track flex shrink-0 items-center gap-7 whitespace-nowrap pl-14 pr-36 font-mono text-[11px] md:pl-4 md:pr-40">
           {chain.map((it, i) => (
             <span key={i} className="inline-flex items-center gap-1.5 text-zinc-500">
               <b className="font-semibold text-zinc-200">{it.label}</b>

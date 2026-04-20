@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { CalendarDays, DollarSign, Flame, Hourglass, LineChart, Target, Users } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CalendarDays, DollarSign, Flame, Hourglass, LineChart, Menu, Target, Users, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ITEMS = [
@@ -14,10 +15,9 @@ const ITEMS = [
   { href: '/calibration', label: 'Calibration',  icon: LineChart,    sublabel: 'Proj vs actual' },
 ];
 
-export function SidebarNav() {
-  const pathname = usePathname();
+function SidebarContent({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
   return (
-    <aside className="hidden md:flex md:w-64 md:flex-col md:border-r md:border-hairline md:bg-[var(--surface-0)]">
+    <>
       <div className="flex items-center gap-2.5 border-b border-hairline px-5 py-5">
         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-oracle-green/10">
           <Target className="h-4 w-4 text-oracle-green" />
@@ -36,6 +36,7 @@ export function SidebarNav() {
             <Link
               key={href}
               href={href}
+              onClick={onNavigate}
               className={cn(
                 'group relative flex items-start gap-3 rounded-md px-3 py-2.5 transition',
                 active
@@ -64,6 +65,61 @@ export function SidebarNav() {
           factor v2.1 · ml v1.2
         </div>
       </div>
-    </aside>
+    </>
+  );
+}
+
+export function SidebarNav() {
+  const pathname = usePathname();
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Close drawer on route change
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
+
+  // Lock body scroll when drawer open
+  useEffect(() => {
+    document.body.style.overflow = mobileOpen ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
+  }, [mobileOpen]);
+
+  return (
+    <>
+      {/* Mobile hamburger — visible below md */}
+      <button
+        onClick={() => setMobileOpen(true)}
+        aria-label="Open menu"
+        className="fixed left-3 top-3 z-30 inline-flex h-9 w-9 items-center justify-center rounded-md border border-hairline bg-[var(--surface-1)] text-zinc-300 shadow md:hidden"
+      >
+        <Menu className="h-4 w-4" />
+      </button>
+
+      {/* Desktop sidebar — md and up */}
+      <aside className="hidden md:flex md:w-64 md:flex-col md:border-r md:border-hairline md:bg-[var(--surface-0)]">
+        <SidebarContent pathname={pathname} />
+      </aside>
+
+      {/* Mobile drawer */}
+      {mobileOpen && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/60 md:hidden"
+            onClick={() => setMobileOpen(false)}
+            aria-hidden
+          />
+          <aside className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-hairline bg-[var(--surface-0)] shadow-2xl md:hidden">
+            <button
+              onClick={() => setMobileOpen(false)}
+              aria-label="Close menu"
+              className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 hover:bg-[var(--surface-2)] hover:text-zinc-100"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <SidebarContent pathname={pathname} onNavigate={() => setMobileOpen(false)} />
+          </aside>
+        </>
+      )}
+    </>
   );
 }

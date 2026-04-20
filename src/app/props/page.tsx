@@ -513,7 +513,8 @@ function HrLeaderboard({
 }) {
   const cols = 'grid-cols-[2rem_minmax(10rem,1.7fr)_minmax(8rem,1.3fr)_4rem_4rem_4rem_4.5rem_4rem_4rem_4.5rem]';
   return (
-    <div className="mt-6 overflow-hidden rounded-xl border border-hairline bg-[var(--surface-1)]">
+    <div className="mt-6 overflow-x-auto rounded-xl border border-hairline bg-[var(--surface-1)]">
+      <div className="min-w-[690px]">
       <div className={`grid ${cols} items-center gap-3 border-b border-hairline px-4 py-2.5 font-mono text-[9px] uppercase tracking-widest text-zinc-500`}>
         <div className="text-right">#</div>
         <div>Hitter</div>
@@ -573,6 +574,7 @@ function HrLeaderboard({
           </Link>
         );
       })}
+      </div>
     </div>
   );
 }
@@ -694,7 +696,8 @@ function HitsLeaderboard({
 }) {
   const cols = 'grid-cols-[2rem_minmax(10rem,1.7fr)_minmax(8rem,1.3fr)_4rem_4rem_4rem_4rem_4rem_4rem]';
   return (
-    <div className="mt-6 overflow-hidden rounded-xl border border-hairline bg-[var(--surface-1)]">
+    <div className="mt-6 overflow-x-auto rounded-xl border border-hairline bg-[var(--surface-1)]">
+      <div className="min-w-[650px]">
       <div className={`grid ${cols} items-center gap-3 border-b border-hairline px-4 py-2.5 font-mono text-[9px] uppercase tracking-widest text-zinc-500`}>
         <div className="text-right">#</div>
         <div>Hitter</div>
@@ -750,6 +753,7 @@ function HitsLeaderboard({
           </Link>
         );
       })}
+      </div>
     </div>
   );
 }
